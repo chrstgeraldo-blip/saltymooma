@@ -1,0 +1,169 @@
+{
+  "app_name": "Saltbread POS & Tracker",
+  "personality": "1 iOS-Native Clean",
+  "personality_one_liner": "A professional, data-friendly financial dashboard infused with the warm, appetizing tones of a modern artisan bakery.",
+  "color": {
+    "surface": "#FAFAF9",
+    "onSurface": "#292524",
+    "surfaceSecondary": "#FFFFFF",
+    "onSurfaceSecondary": "#292524",
+    "surfaceTertiary": "#F5F5F4",
+    "onSurfaceTertiary": "#57534E",
+    "surfaceInverse": "#292524",
+    "onSurfaceInverse": "#FAFAF9",
+    "brand": "#B45309",
+    "brandPrimary": "#92400E",
+    "onBrandPrimary": "#FFFFFF",
+    "brandSecondary": "#D97706",
+    "onBrandSecondary": "#FFFFFF",
+    "brandTertiary": "#FEF3C7",
+    "onBrandTertiary": "#92400E",
+    "success": "#166534",
+    "onSuccess": "#FFFFFF",
+    "warning": "#CA8A04",
+    "onWarning": "#FFFFFF",
+    "error": "#9F1239",
+    "onError": "#FFFFFF",
+    "info": "#44403C",
+    "onInfo": "#FFFFFF",
+    "border": "#E7E5E4",
+    "borderStrong": "#D6D3D1",
+    "divider": "#F5F5F4"
+  },
+  "typography": {
+    "displayFontFamily": "Plus Jakarta Sans",
+    "textFontFamily": "Plus Jakarta Sans",
+    "scale": {
+      "sm": 12,
+      "base": 14,
+      "lg": 16,
+      "xl": 20,
+      "2xl": 24
+    }
+  },
+  "spacing": {
+    "rule": "Generous iOS-native vertical rhythm. Cards padded well to avoid cramped data. Use md for inner component spacing and lg for screen edge padding.",
+    "xs": 4,
+    "sm": 8,
+    "md": 12,
+    "lg": 16,
+    "xl": 24,
+    "2xl": 32,
+    "3xl": 48
+  },
+  "radius_tokens": {
+    "sm": 6,
+    "md": 12,
+    "lg": 20,
+    "pill": 999
+  },
+  "shadow_tier": 1,
+  "navigation": "bottom_tabs",
+  "icon_set": "Phosphor",
+  "glassmorphism": {
+    "enabled": "true",
+    "do's": [
+      "Use glass on the bottom tab bar when content scrolls behind it",
+      "Apply glass to sticky headers over scrolling content",
+      "Use glass for floating action buttons or sticky CTA bottoms"
+    ],
+    "dont's": [
+      "Never apply glass to regular data cards or form inputs",
+      "Do not use blur behind dense text lists"
+    ]
+  },
+  "platform_libraries": {
+    "glass": {
+      "ios": "expo-glass-effect",
+      "android": "expo-blur",
+      "low_end_android_fallback": "solid surfaceSecondary"
+    },
+    "image": "expo-image",
+    "blur": "expo-blur",
+    "bottom_sheet": "@gorhom/bottom-sheet",
+    "animation": "react-native-reanimated",
+    "gesture": "react-native-gesture-handler"
+  },
+  "screens": [
+    {
+      "name": "Login",
+      "purpose": "Simple email/password authentication for the bakery owner.",
+      "states": {
+        "loading": "Spinner over the login button",
+        "empty": "N/A",
+        "error": "Inline text below the failed input field"
+      },
+      "layout": "Centered form over a subtle background photo or warm gradient. Use large inputs with clear labels. Sticky submit button avoiding keyboard."
+    },
+    {
+      "name": "Dashboard",
+      "purpose": "A high-level view of finances and operations: revenue, expenses, active POs, and top variants.",
+      "states": {
+        "loading": "Skeleton UI for metric cards and chart area",
+        "empty": "Welcome state suggesting adding the first PO or expense",
+        "error": "Error card with a retry button"
+      },
+      "layout": "Use tabular numbers for KPIs (Revenue, Expenses, Profit). Place a prominent trend chart below the KPIs. Add a horizontal scrolling section for 'Top-Selling Variants'. Keep layout single-column to maintain order."
+    },
+    {
+      "name": "Orders (PO Management)",
+      "purpose": "Track and manage Pre-Orders (Pending, In Progress, Completed, Cancelled).",
+      "states": {
+        "loading": "List skeleton",
+        "empty": "Illustration of an empty bakery basket with 'No Active Orders' text",
+        "error": "Readable message with 'Retry' CTA"
+      },
+      "layout": "Sticky horizontal filter chips at the top (glass background). Each list item is a card containing customer name, items summary, price, and status indicator. Tapping opens a full-screen detail view with a sticky primary action (Update Status)."
+    },
+    {
+      "name": "Expenses",
+      "purpose": "Log and categorize outgoing costs (Raw Materials, Packaging, Transport, Utilities, Other).",
+      "states": {
+        "loading": "List skeleton",
+        "empty": "Empty state illustration with 'Add your first expense' CTA",
+        "error": "Readable error state"
+      },
+      "layout": "Header with 'Total Expenses' summary. Floating Action Button (FAB) or sticky bottom CTA to add a new expense. List categorized by month/week."
+    },
+    {
+      "name": "Products",
+      "purpose": "Manage the 7 saltbread variants, images, and prices.",
+      "states": {
+        "loading": "Skeleton grid",
+        "empty": "Empty grid",
+        "error": "Error loading catalog"
+      },
+      "layout": "2-column grid. Each card features a clear, large product image, name, and price. Rounded corners with generous whitespace so the bakery items shine."
+    }
+  ],
+  "images": {
+    "hero_login": {
+      "url": "https://images.unsplash.com/photo-1587241321921-91a834d6d191?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NTJ8MHwxfHNlYXJjaHwxfHxiYWtlcnklMjBzdG9yZWZyb250JTIwbW9kZXJufGVufDB8fHx8MTc4NTQ2MjIyOHww&ixlib=rb-4.1.0&q=85",
+      "alt": "Modern bakery storefront with warm lighting"
+    },
+    "variant_plain": {
+      "url": "https://images.unsplash.com/photo-1598373182133-52452f7691ef?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxOTB8MHwxfHNlYXJjaHwxfHxzYWx0YnJlYWQlMjBwbGFpbnxlbnwwfHx8fDE3ODU0NjIyMjh8MA&ixlib=rb-4.1.0&q=85",
+      "alt": "Plain saltbread variant"
+    },
+    "variant_choco": {
+      "url": "https://images.unsplash.com/photo-1564354273277-c6d4b8532100?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1OTN8MHwxfHNlYXJjaHwxfHxjaG9jb2xhdGUlMjBicmVhZCUyMHBhc3RyeXxlbnwwfHx8fDE3ODU0NjIyMjh8MA&ixlib=rb-4.1.0&q=85",
+      "alt": "Chocolate saltbread variant"
+    }
+  },
+  "haptics": {
+    "events": {
+      "tab_press": "light",
+      "button_primary": "medium",
+      "status_change": "success",
+      "filter_select": "selection"
+    }
+  },
+  "instructions_to_main_agent": [
+    "Design Principles: Follow iOS-Native Clean but use warm, bakery-inspired colors (Ochre/Amber) instead of default tech blues.",
+    "Data Display: Use Plus Jakarta Sans. Ensure numbers in the dashboard (revenue, profit) are clear and use tabular lining so they align vertically.",
+    "Navigation: Implement a max 4-tab bottom navigation (Dashboard, Orders, Expenses, Products). Ensure the tab bar uses glassmorphism if content scrolls behind it.",
+    "Cards & Shadow: Use slight shadows (tier 1) for main container cards. Avoid heavy shadows or borders.",
+    "Images & Visuals: Use the provided images for the variants. If rendering text over images (e.g., login hero), use a gradient-to-dark scrim pattern to ensure WCAG AA readability.",
+    "Action Buttons: Primary actions (like 'Update PO Status', 'Save Expense') must be sticky at the bottom of the screen to remain accessible during scroll."
+  ]
+}
