@@ -317,38 +317,86 @@ async def delete_expense(expense_id: str, user=Depends(get_current_user)):
     return {"ok": True}
 
 # ---------- Dashboard ----------
+def _completed_date_str(ca) -> Optional[str]:
+    if not ca:
+        return None
+    if isinstance(ca, str):
+        try:
+            return datetime.fromisoformat(ca.replace("Z", "")).date().isoformat()
+        except Exception:
+            return None
+    if hasattr(ca, "date"):
+        return ca.date().isoformat()
+    return None
+
+
 @api_router.get("/dashboard/summary")
-async def dashboard_summary(user=Depends(get_current_user)):
-    # Revenue = sum of completed orders' totals
-    completed_orders = await db.orders.find({"status": "completed"}, {"_id": 0}).to_list(5000)
+async def dashboard_summary(
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    user=Depends(get_current_user),
+):
+    # Parse range (inclusive)
+    today = datetime.now(timezone.utc).date()
+    try:
+        d_from = datetime.fromisoformat(from_date).date() if from_date else None
+        d_to = datetime.fromisoformat(to_date).date() if to_date else None
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format, use YYYY-MM-DD")
+    if d_from and d_to and d_from > d_to:
+        d_from, d_to = d_to, d_from
+
+    completed_orders_all = await db.orders.find({"status": "completed"}, {"_id": 0}).to_list(5000)
     all_orders = await db.orders.find({}, {"_id": 0}).to_list(5000)
-    expenses = await db.expenses.find({}, {"_id": 0}).to_list(5000)
+    expenses_all = await db.expenses.find({}, {"_id": 0}).to_list(5000)
+
+    def in_range(date_str: Optional[str]) -> bool:
+        if not date_str:
+            return False
+        try:
+            d = datetime.fromisoformat(date_str).date()
+        except Exception:
+            return False
+        if d_from and d < d_from:
+            return False
+        if d_to and d > d_to:
+            return False
+        return True
+
+    ranged = bool(d_from or d_to)
+    if ranged:
+        completed_orders = [o for o in completed_orders_all if in_range(_completed_date_str(o.get("completed_at")))]
+        expenses = [e for e in expenses_all if in_range(e.get("date"))]
+    else:
+        completed_orders = completed_orders_all
+        expenses = expenses_all
 
     total_revenue = sum(o["total"] for o in completed_orders)
     total_expenses = sum(e["amount"] for e in expenses)
     profit = total_revenue - total_expenses
 
-    # Active POs = pending + in_progress
+    # Active POs = pending + in_progress (not date-filtered)
     active_po = sum(1 for o in all_orders if o["status"] in ("pending", "in_progress"))
     completed_count = len(completed_orders)
 
-    # Trend: last 7 days revenue & expenses
-    today = datetime.now(timezone.utc).date()
+    # Trend: use range if given (capped at 31 days), else last 7 days
+    if ranged:
+        start = d_from or (d_to - timedelta(days=6))
+        end = d_to or today
+        days = (end - start).days + 1
+        if days > 31:
+            start = end - timedelta(days=30)
+            days = 31
+    else:
+        end = today
+        start = today - timedelta(days=6)
+        days = 7
+
     trend = []
-    for i in range(6, -1, -1):
-        d = today - timedelta(days=i)
+    for i in range(days):
+        d = start + timedelta(days=i)
         d_str = d.isoformat()
-        rev = 0.0
-        for o in completed_orders:
-            ca = o.get("completed_at")
-            if ca:
-                if isinstance(ca, str):
-                    try: cd = datetime.fromisoformat(ca.replace("Z","")).date().isoformat()
-                    except: cd = None
-                else:
-                    cd = ca.date().isoformat() if hasattr(ca, "date") else None
-                if cd == d_str:
-                    rev += o["total"]
+        rev = sum(o["total"] for o in completed_orders if _completed_date_str(o.get("completed_at")) == d_str)
         exp = sum(e["amount"] for e in expenses if e.get("date") == d_str)
         trend.append({"date": d_str, "revenue": rev, "expenses": exp})
 
