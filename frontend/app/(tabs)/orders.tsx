@@ -1,12 +1,14 @@
-import { useCallback, useState } from "react";
+import { useState } from "react";
 import {
-  View, Text, StyleSheet, FlatList, Pressable, ScrollView, ActivityIndicator, RefreshControl,
+  View, Text, StyleSheet, FlatList, Pressable, ScrollView, RefreshControl,
 } from "react-native";
-import { useFocusEffect, router } from "expo-router";
+import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api } from "@/src/lib/api";
 import { colors, spacing, radius, type, formatIDR, STATUS_META } from "@/src/lib/theme";
+import { SkeletonCardList } from "@/src/components/Skeleton";
+import { useFetch } from "@/src/hooks/use-fetch";
 
 type Order = {
   id: string;
@@ -28,21 +30,12 @@ const FILTERS: { key: string; label: string }[] = [
 export default function Orders() {
   const insets = useSafeAreaInsets();
   const [filter, setFilter] = useState("all");
-  const [orders, setOrders] = useState<Order[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
 
-  const load = useCallback(async (f = filter) => {
-    try {
-      const q = f === "all" ? "" : `?status_filter=${f}`;
-      const data = await api<Order[]>(`/orders${q}`);
-      setOrders(data);
-    } finally {
-      setLoading(false); setRefreshing(false);
-    }
-  }, [filter]);
-
-  useFocusEffect(useCallback(() => { load(filter); }, [filter, load]));
+  const { data, loading, refreshing, refresh } = useFetch<Order[]>(
+    filter,
+    () => api<Order[]>(`/orders${filter === "all" ? "" : `?status_filter=${filter}`}`)
+  );
+  const orders = data ?? [];
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.surface, paddingTop: insets.top }}>
@@ -74,14 +67,14 @@ export default function Orders() {
       </View>
 
       {loading ? (
-        <ActivityIndicator style={{ marginTop: spacing.xl }} color={colors.brandPrimary} />
+        <SkeletonCardList count={5} />
       ) : (
         <FlatList
           testID="orders-list"
           data={orders}
           keyExtractor={(o) => o.id}
           contentContainerStyle={{ padding: spacing.xl, paddingTop: spacing.sm, paddingBottom: 120 }}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} />}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} />}
           ListEmptyComponent={
             <View style={styles.empty}>
               <Ionicons name="basket-outline" size={48} color={colors.onSurfaceTertiary} />

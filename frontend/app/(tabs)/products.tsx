@@ -1,30 +1,24 @@
-import { useCallback, useState } from "react";
 import {
-  View, Text, StyleSheet, FlatList, Pressable, ActivityIndicator, RefreshControl,
+  View, Text, StyleSheet, FlatList, Pressable, RefreshControl,
 } from "react-native";
-import { useFocusEffect, router } from "expo-router";
+import { router } from "expo-router";
 import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api } from "@/src/lib/api";
 import { colors, spacing, radius, type, formatIDR } from "@/src/lib/theme";
+import { SkeletonCardList } from "@/src/components/Skeleton";
+import { useFetch } from "@/src/hooks/use-fetch";
 
 type Product = { id: string; name: string; price: number; image_url?: string; active: boolean };
 
 export default function Products() {
   const insets = useSafeAreaInsets();
-  const [items, setItems] = useState<Product[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-
-  const load = useCallback(async () => {
-    try {
-      const data = await api<Product[]>("/products");
-      setItems(data);
-    } finally { setLoading(false); setRefreshing(false); }
-  }, []);
-
-  useFocusEffect(useCallback(() => { load(); }, [load]));
+  const { data, loading, refreshing, refresh } = useFetch<Product[]>(
+    "products",
+    () => api<Product[]>("/products")
+  );
+  const items = data ?? [];
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.surface, paddingTop: insets.top }}>
@@ -34,7 +28,7 @@ export default function Products() {
       </View>
 
       {loading ? (
-        <ActivityIndicator style={{ marginTop: spacing.xl }} color={colors.brandPrimary} />
+        <SkeletonCardList count={4} />
       ) : (
         <FlatList
           testID="products-grid"
@@ -43,7 +37,7 @@ export default function Products() {
           keyExtractor={(p) => p.id}
           columnWrapperStyle={{ gap: spacing.md, paddingHorizontal: spacing.xl }}
           contentContainerStyle={{ paddingTop: spacing.sm, paddingBottom: 120, gap: spacing.md }}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} />}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} />}
           renderItem={({ item }) => (
             <Pressable
               testID={`product-card-${item.id}`}

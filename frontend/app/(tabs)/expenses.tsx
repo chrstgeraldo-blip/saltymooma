@@ -1,40 +1,36 @@
-import { useCallback, useState } from "react";
+import { useState } from "react";
 import {
-  View, Text, StyleSheet, FlatList, Pressable, ScrollView, ActivityIndicator, RefreshControl,
+  View, Text, StyleSheet, FlatList, Pressable, ScrollView, RefreshControl,
 } from "react-native";
-import { useFocusEffect, router } from "expo-router";
+import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api } from "@/src/lib/api";
 import { colors, spacing, radius, type, formatIDR } from "@/src/lib/theme";
+import { SkeletonCardList } from "@/src/components/Skeleton";
+import { useFetch } from "@/src/hooks/use-fetch";
 
 type Expense = { id: string; amount: number; category: string; description?: string; date: string };
 
 export default function Expenses() {
   const insets = useSafeAreaInsets();
-  const [items, setItems] = useState<Expense[]>([]);
-  const [cats, setCats] = useState<string[]>([]);
   const [filter, setFilter] = useState("all");
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
 
-  const load = useCallback(async (f = filter) => {
-    try {
-      const [ex, cs] = await Promise.all([
-        api<Expense[]>(`/expenses${f === "all" ? "" : `?category=${encodeURIComponent(f)}`}`),
-        api<string[]>("/expenses/categories"),
-      ]);
-      setItems(ex); setCats(cs);
-    } finally { setLoading(false); setRefreshing(false); }
-  }, [filter]);
-
-  useFocusEffect(useCallback(() => { load(filter); }, [filter, load]));
+  const { data, loading, refreshing, refresh, reload } = useFetch(filter, async () => {
+    const [ex, cs] = await Promise.all([
+      api<Expense[]>(`/expenses${filter === "all" ? "" : `?category=${encodeURIComponent(filter)}`}`),
+      api<string[]>("/expenses/categories"),
+    ]);
+    return { items: ex, cats: cs };
+  });
+  const items = data?.items ?? [];
+  const cats = data?.cats ?? [];
 
   const total = items.reduce((s, e) => s + e.amount, 0);
 
   const remove = async (id: string) => {
     await api(`/expenses/${id}`, { method: "DELETE" });
-    load(filter);
+    reload({ refresh: true });
   };
 
   return (
@@ -60,14 +56,14 @@ export default function Expenses() {
       </View>
 
       {loading ? (
-        <ActivityIndicator style={{ marginTop: spacing.xl }} color={colors.brandPrimary} />
+        <SkeletonCardList count={5} />
       ) : (
         <FlatList
           testID="expenses-list"
           data={items}
           keyExtractor={(e) => e.id}
           contentContainerStyle={{ padding: spacing.xl, paddingTop: spacing.sm, paddingBottom: 120 }}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} />}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} />}
           ListEmptyComponent={
             <View style={styles.empty}>
               <Ionicons name="wallet-outline" size={48} color={colors.onSurfaceTertiary} />

@@ -1,14 +1,38 @@
-import { useCallback, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
-  View, Text, ScrollView, StyleSheet, ActivityIndicator, RefreshControl, Pressable,
-  Modal, TextInput, KeyboardAvoidingView, Platform,
+  View, Text, ScrollView, StyleSheet, RefreshControl, Pressable,
+  Modal, KeyboardAvoidingView, Platform, useWindowDimensions,
 } from "react-native";
-import { useFocusEffect, router } from "expo-router";
+import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api } from "@/src/lib/api";
 import { useAuth } from "@/src/lib/auth";
 import { colors, spacing, radius, type, formatIDR } from "@/src/lib/theme";
+import { Skeleton } from "@/src/components/Skeleton";
+import { useFetch } from "@/src/hooks/use-fetch";
+import { CalendarGrid } from "@/src/components/CalendarField";
+import { toISODate, formatHuman, startOfMonth, startOfWeek } from "@/src/lib/date";
+
+type TrendPoint = {
+  date: string;
+  end_date: string;
+  label: string;
+  revenue: number;
+  expenses: number;
+  order_count: number;
+};
+
+type Comparison = {
+  from: string;
+  to: string;
+  total_revenue: number;
+  total_expenses: number;
+  profit: number;
+  revenue_change_pct: number | null;
+  expenses_change_pct: number | null;
+  profit_change_pct: number | null;
+} | null;
 
 type Summary = {
   total_revenue: number;
@@ -16,34 +40,24 @@ type Summary = {
   profit: number;
   active_po: number;
   completed_orders: number;
-  trend: { date: string; revenue: number; expenses: number }[];
+  profit_margin: number | null;
+  avg_order_value: number | null;
+  comparison: Comparison;
+  trend: TrendPoint[];
+  granularity: "day" | "week" | "month";
   top_variants: { name: string; quantity: number; revenue: number }[];
   expenses_by_category: { category: string; amount: number }[];
 };
 
 type RangeKey = "all" | "week" | "month" | "custom";
 
-function iso(d: Date) {
-  return d.toISOString().slice(0, 10);
-}
-function startOfWeek(d: Date) {
-  const day = d.getDay(); // 0=Sun
-  const diff = (day + 6) % 7; // Mon=0
-  const s = new Date(d);
-  s.setDate(d.getDate() - diff);
-  return s;
-}
-function startOfMonth(d: Date) {
-  return new Date(d.getFullYear(), d.getMonth(), 1);
-}
-
 function computeRange(key: RangeKey, customFrom: string, customTo: string): { from?: string; to?: string; label: string } {
   const today = new Date();
   if (key === "week") {
-    return { from: iso(startOfWeek(today)), to: iso(today), label: "This Week" };
+    return { from: toISODate(startOfWeek(today)), to: toISODate(today), label: "This Week" };
   }
   if (key === "month") {
-    return { from: iso(startOfMonth(today)), to: iso(today), label: "This Month" };
+    return { from: toISODate(startOfMonth(today)), to: toISODate(today), label: "This Month" };
   }
   if (key === "custom" && customFrom && customTo) {
     return { from: customFrom, to: customTo, label: `${customFrom} → ${customTo}` };
@@ -58,36 +72,58 @@ const RANGE_TABS: { key: RangeKey; label: string }[] = [
   { key: "custom", label: "Custom" },
 ];
 
+const CHART_H = 120;
+const CHART_MIN_COL = 34;
+
+/** Mirrors the real layout so nothing jumps when data lands. */
+function DashboardSkeleton() {
+  return (
+    <View testID="dashboard-skeleton">
+      <View style={styles.kpiGrid}>
+        {[0, 1, 2, 3].map((i) => (
+          <Skeleton key={i} width="47%" height={84} style={{ borderRadius: radius.lg }} />
+        ))}
+      </View>
+      <View style={styles.card}>
+        <Skeleton width="55%" height={18} />
+        <Skeleton height={160} style={{ marginTop: spacing.md }} />
+      </View>
+      <View style={styles.card}>
+        <Skeleton width="45%" height={18} />
+        {[0, 1, 2].map((i) => (
+          <Skeleton key={i} height={16} style={{ marginTop: spacing.md }} />
+        ))}
+      </View>
+    </View>
+  );
+}
+
 export default function Dashboard() {
   const insets = useSafeAreaInsets();
+  const { width: winW } = useWindowDimensions();
   const { user, signOut } = useAuth();
-  const [data, setData] = useState<Summary | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-
   const [range, setRange] = useState<RangeKey>("all");
-  const [customFrom, setCustomFrom] = useState<string>(iso(startOfMonth(new Date())));
-  const [customTo, setCustomTo] = useState<string>(iso(new Date()));
+  const [customFrom, setCustomFrom] = useState<string>(toISODate(startOfMonth(new Date())));
+  const [customTo, setCustomTo] = useState<string>(toISODate(new Date()));
   const [customModal, setCustomModal] = useState(false);
+  const [point, setPoint] = useState<TrendPoint | null>(null);
+  const [editing, setEditing] = useState<"from" | "to">("from");
 
   const effectiveRange = useMemo(() => computeRange(range, customFrom, customTo), [range, customFrom, customTo]);
 
-  const load = useCallback(async (r = effectiveRange) => {
-    try {
-      const params = new URLSearchParams();
-      if (r.from) params.set("from_date", r.from);
-      if (r.to) params.set("to_date", r.to);
-      const suffix = params.toString() ? `?${params.toString()}` : "";
-      const d = await api<Summary>(`/dashboard/summary${suffix}`);
-      setData(d);
-    } catch {
-      // ignore
-    } finally {
-      setLoading(false); setRefreshing(false);
-    }
+  const query = useMemo(() => {
+    const params = new URLSearchParams();
+    if (effectiveRange.from) params.set("from_date", effectiveRange.from);
+    if (effectiveRange.to) params.set("to_date", effectiveRange.to);
+    return params.toString();
   }, [effectiveRange]);
 
-  useFocusEffect(useCallback(() => { load(); }, [load]));
+  // Keying on the query string means changing range shows a skeleton, while
+  // returning to the tab on the same range refreshes without one.
+  const { data, loading, refreshing, refresh } = useFetch<Summary>(
+    query,
+    () => api<Summary>(`/dashboard/summary${query ? `?${query}` : ""}`)
+  );
 
   const pickRange = (key: RangeKey) => {
     if (key === "custom") {
@@ -106,25 +142,27 @@ export default function Dashboard() {
     ? Math.max(1, ...data.trend.flatMap((t) => [t.revenue, t.expenses]))
     : 1;
 
-  if (loading && !data) {
-    return (
-      <View style={styles.centered}>
-        <ActivityIndicator color={colors.brandPrimary} />
-      </View>
-    );
-  }
+  // Columns keep a minimum width and the chart scrolls once they overflow the
+  // card, so a 31-day month reads the same as a 7-day week instead of colliding.
+  const chartInnerW = winW - spacing.xl * 2 - spacing.lg * 2;
+  const colW = Math.max(CHART_MIN_COL, chartInnerW / Math.max(1, data?.trend.length ?? 1));
 
   return (
     <ScrollView
       testID="dashboard-scroll"
       style={{ flex: 1, backgroundColor: colors.surface }}
       contentContainerStyle={{ paddingTop: insets.top + spacing.md, paddingBottom: spacing["3xl"] }}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} />}
+      refreshControl={
+        <RefreshControl
+          refreshing={refreshing}
+          onRefresh={refresh}
+        />
+      }
     >
       <View style={styles.headerRow}>
         <View>
           <Text style={styles.hello}>Hi, {user?.name?.split(" ")[0] || "Baker"}</Text>
-          <Text style={styles.subhead}>Here's your bakery snapshot</Text>
+          <Text style={styles.subhead}>Here&apos;s your bakery snapshot</Text>
         </View>
         <Pressable testID="signout-btn" onPress={signOut} style={styles.iconBtn}>
           <Ionicons name="log-out-outline" size={22} color={colors.onSurface} />
@@ -155,35 +193,89 @@ export default function Dashboard() {
       </View>
 
       <Text testID="range-label" style={styles.rangeLabel}>Showing: {effectiveRange.label}</Text>
+      {data?.comparison && !loading ? (
+        <Text style={styles.compareNote}>
+          compared with {formatHuman(data.comparison.from)} – {formatHuman(data.comparison.to)}
+        </Text>
+      ) : null}
 
+      {loading ? <DashboardSkeleton /> : (
+        <>
       {/* KPI Cards */}
       <View style={styles.kpiGrid}>
-        <KpiCard label="Revenue" value={formatIDR(data?.total_revenue || 0)} tone="brand" icon="trending-up" testID="kpi-revenue" />
-        <KpiCard label="Expenses" value={formatIDR(data?.total_expenses || 0)} tone="error" icon="trending-down" testID="kpi-expenses" />
-        <KpiCard label="Profit" value={formatIDR(data?.profit || 0)} tone="success" icon="cash" testID="kpi-profit" />
-        <KpiCard label="Active PO" value={String(data?.active_po || 0)} tone="warning" icon="time" testID="kpi-active-po" />
+        <KpiCard
+          label="Revenue" value={formatIDR(data?.total_revenue || 0)}
+          tone="brand" icon="trending-up" testID="kpi-revenue"
+          delta={data?.comparison?.revenue_change_pct ?? undefined}
+        />
+        <KpiCard
+          label="Expenses" value={formatIDR(data?.total_expenses || 0)}
+          tone="error" icon="trending-down" testID="kpi-expenses"
+          delta={data?.comparison?.expenses_change_pct ?? undefined} invert
+        />
+        <KpiCard
+          label="Profit" value={formatIDR(data?.profit || 0)}
+          tone="success" icon="cash" testID="kpi-profit"
+          delta={data?.comparison?.profit_change_pct ?? undefined}
+        />
+        <KpiCard
+          label="Active PO" value={String(data?.active_po || 0)}
+          tone="warning" icon="time" testID="kpi-active-po"
+          note="open now, all dates"
+        />
+      </View>
+
+      {/* Rates */}
+      <View style={styles.card}>
+        <View style={styles.rateRow}>
+          <View style={styles.rateItem} testID="stat-margin">
+            <Text style={styles.rateLabel}>Profit margin</Text>
+            <Text style={styles.rateValue}>
+              {data?.profit_margin != null ? `${data.profit_margin}%` : "—"}
+            </Text>
+          </View>
+          <View style={styles.rateDivider} />
+          <View style={styles.rateItem} testID="stat-aov">
+            <Text style={styles.rateLabel}>Avg order value</Text>
+            <Text style={styles.rateValue}>
+              {data?.avg_order_value != null ? formatIDR(data.avg_order_value) : "—"}
+            </Text>
+          </View>
+        </View>
       </View>
 
       {/* Trend chart */}
       <View style={styles.card}>
-        <Text style={styles.cardTitle}>Revenue vs Expenses</Text>
-        <View style={styles.chartWrap}>
-          {data?.trend.map((t) => {
-            const rH = (t.revenue / maxTrend) * 120;
-            const eH = (t.expenses / maxTrend) * 120;
-            const label = t.date.slice(5);
-            const showLabel = (data.trend.length <= 8) || (data.trend.indexOf(t) % Math.ceil(data.trend.length / 6) === 0);
-            return (
-              <View key={t.date} style={styles.barCol}>
-                <View style={styles.barStack}>
-                  <View style={[styles.bar, { height: Math.max(2, rH), backgroundColor: colors.brandPrimary }]} />
-                  <View style={[styles.bar, { height: Math.max(2, eH), backgroundColor: colors.error, marginTop: 4 }]} />
-                </View>
-                <Text style={styles.barLabel}>{showLabel ? label : ""}</Text>
-              </View>
-            );
-          })}
+        <View style={styles.chartHead}>
+          <Text style={[styles.cardTitle, { marginBottom: 0 }]}>Revenue vs Expenses</Text>
+          <Text style={styles.chartPeak}>peak {formatIDR(maxTrend)}</Text>
         </View>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={{ minWidth: chartInnerW }}
+        >
+          <View style={styles.chartWrap}>
+            {data?.trend.map((t) => {
+              const rH = (t.revenue / maxTrend) * CHART_H;
+              const eH = (t.expenses / maxTrend) * CHART_H;
+              return (
+                <Pressable
+                  key={t.date}
+                  testID={`bar-${t.date}`}
+                  onPress={() => setPoint(t)}
+                  style={[styles.barCol, { width: colW }]}
+                >
+                  <View style={styles.barStack}>
+                    <View style={[styles.bar, { height: Math.max(2, rH), backgroundColor: colors.brandPrimary }]} />
+                    <View style={[styles.bar, { height: Math.max(2, eH), backgroundColor: colors.error }]} />
+                  </View>
+                  <Text style={styles.barLabel} numberOfLines={1}>{t.label}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </ScrollView>
         <View style={styles.legendRow}>
           <View style={styles.legendItem}>
             <View style={[styles.dot, { backgroundColor: colors.brandPrimary }]} />
@@ -249,6 +341,54 @@ export default function Dashboard() {
           <Text style={styles.quickText}>Log Expense</Text>
         </Pressable>
       </View>
+        </>
+      )}
+
+      {/* Tapped-bar detail */}
+      <Modal
+        visible={!!point}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setPoint(null)}
+      >
+        <View style={styles.modalOverlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setPoint(null)} />
+          <View style={styles.modalCard} testID="bar-detail-modal">
+            <Text style={styles.modalTitle}>
+              {point ? (point.date === point.end_date
+                ? formatHuman(point.date)
+                : `${formatHuman(point.date)} – ${formatHuman(point.end_date)}`) : ""}
+            </Text>
+            <View style={styles.detailRow}>
+              <Text style={styles.detailLabel}>Revenue</Text>
+              <Text style={styles.detailValue}>{formatIDR(point?.revenue || 0)}</Text>
+            </View>
+            <View style={styles.detailRow}>
+              <Text style={styles.detailLabel}>Expenses</Text>
+              <Text style={styles.detailValue}>{formatIDR(point?.expenses || 0)}</Text>
+            </View>
+            <View style={styles.detailRow}>
+              <Text style={styles.detailLabel}>Profit</Text>
+              <Text style={[styles.detailValue, {
+                color: (point?.revenue || 0) - (point?.expenses || 0) >= 0 ? colors.success : colors.error,
+              }]}>
+                {formatIDR((point?.revenue || 0) - (point?.expenses || 0))}
+              </Text>
+            </View>
+            <View style={[styles.detailRow, { borderBottomWidth: 0 }]}>
+              <Text style={styles.detailLabel}>Orders completed</Text>
+              <Text style={styles.detailValue}>{point?.order_count ?? 0}</Text>
+            </View>
+            <Pressable
+              testID="bar-detail-close"
+              onPress={() => setPoint(null)}
+              style={[styles.modalBtn, { backgroundColor: colors.brandPrimary, marginTop: spacing.md }]}
+            >
+              <Text style={[styles.modalBtnText, { color: colors.onBrandPrimary }]}>Close</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
 
       {/* Custom range modal */}
       <Modal
@@ -264,21 +404,33 @@ export default function Dashboard() {
           <Pressable style={StyleSheet.absoluteFill} onPress={() => setCustomModal(false)} />
           <View style={styles.modalCard} testID="custom-range-modal">
             <Text style={styles.modalTitle}>Custom range</Text>
-            <Text style={styles.label}>From (YYYY-MM-DD)</Text>
-            <TextInput
-              testID="custom-from"
-              style={styles.input}
-              value={customFrom}
-              onChangeText={setCustomFrom}
-              placeholderTextColor={colors.onSurfaceTertiary}
-            />
-            <Text style={[styles.label, { marginTop: spacing.md }]}>To (YYYY-MM-DD)</Text>
-            <TextInput
-              testID="custom-to"
-              style={styles.input}
-              value={customTo}
-              onChangeText={setCustomTo}
-              placeholderTextColor={colors.onSurfaceTertiary}
+            <View style={styles.edgeRow}>
+              {(["from", "to"] as const).map((edge) => {
+                const active = editing === edge;
+                const val = edge === "from" ? customFrom : customTo;
+                return (
+                  <Pressable
+                    key={edge}
+                    testID={`custom-${edge}`}
+                    onPress={() => setEditing(edge)}
+                    style={[styles.edgeBtn, active && styles.edgeBtnActive]}
+                  >
+                    <Text style={[styles.edgeLabel, active && { color: colors.brandPrimary }]}>
+                      {edge === "from" ? "From" : "To"}
+                    </Text>
+                    <Text style={[styles.edgeValue, active && { color: colors.brandPrimary }]}>
+                      {formatHuman(val)}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            <CalendarGrid
+              value={editing === "from" ? customFrom : customTo}
+              onChange={(iso) => {
+                if (editing === "from") { setCustomFrom(iso); setEditing("to"); }
+                else { setCustomTo(iso); }
+              }}
             />
             <View style={styles.modalActions}>
               <Pressable
@@ -303,20 +455,36 @@ export default function Dashboard() {
   );
 }
 
-function KpiCard({ label, value, tone, icon, testID }: any) {
+function KpiCard({ label, value, tone, icon, testID, delta, note, invert }: any) {
   const bg = { brand: "#FEF3C7", error: "#FFE4E6", success: "#DCFCE7", warning: "#FEF9C3" }[tone as string] as string;
   const fg = { brand: colors.brandPrimary, error: colors.error, success: colors.success, warning: colors.warning }[tone as string] as string;
+  // `invert` flips the good/bad reading: rising expenses is not a win.
+  const rising = typeof delta === "number" && delta > 0;
+  const good = invert ? !rising : rising;
   return (
     <View testID={testID} style={[styles.kpi, { backgroundColor: bg }]}>
       <Ionicons name={icon} size={18} color={fg} />
       <Text style={[styles.kpiLabel, { color: fg }]}>{label}</Text>
       <Text style={[styles.kpiValue, { color: fg }]} numberOfLines={1} adjustsFontSizeToFit>{value}</Text>
+      {typeof delta === "number" ? (
+        <View style={styles.deltaRow}>
+          <Ionicons
+            name={rising ? "arrow-up" : "arrow-down"}
+            size={11}
+            color={good ? colors.success : colors.error}
+          />
+          <Text style={[styles.deltaText, { color: good ? colors.success : colors.error }]}>
+            {Math.abs(delta)}%
+          </Text>
+        </View>
+      ) : note ? (
+        <Text style={[styles.kpiNote, { color: fg }]}>{note}</Text>
+      ) : null}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  centered: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: colors.surface },
   headerRow: {
     flexDirection: "row", justifyContent: "space-between", alignItems: "center",
     paddingHorizontal: spacing.xl, marginBottom: spacing.md,
@@ -349,6 +517,35 @@ const styles = StyleSheet.create({
   },
   kpiLabel: { fontSize: type.sm, fontWeight: "600", marginTop: spacing.xs },
   kpiValue: { fontSize: type.lg, fontWeight: "800", marginTop: spacing.xs, fontVariant: ["tabular-nums"] },
+  kpiNote: { fontSize: 10, marginTop: 3, opacity: 0.75 },
+  deltaRow: { flexDirection: "row", alignItems: "center", gap: 2, marginTop: 3 },
+  deltaText: { fontSize: 11, fontWeight: "800", fontVariant: ["tabular-nums"] },
+  compareNote: {
+    paddingHorizontal: spacing.xl, marginTop: -spacing.sm, marginBottom: spacing.md,
+    fontSize: type.sm, color: colors.onSurfaceTertiary,
+  },
+  edgeRow: { flexDirection: "row", gap: spacing.sm, marginBottom: spacing.md },
+  edgeBtn: {
+    flex: 1, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md,
+    paddingVertical: spacing.sm, paddingHorizontal: spacing.md,
+  },
+  edgeBtnActive: { borderColor: colors.brandPrimary, backgroundColor: colors.brandTertiary },
+  edgeLabel: { fontSize: 11, fontWeight: "700", color: colors.onSurfaceTertiary },
+  edgeValue: { fontSize: type.base, fontWeight: "700", color: colors.onSurface, marginTop: 2 },
+  rateRow: { flexDirection: "row", alignItems: "center" },
+  rateItem: { flex: 1, alignItems: "center" },
+  rateDivider: { width: 1, height: 34, backgroundColor: colors.divider },
+  rateLabel: { fontSize: type.sm, color: colors.onSurfaceTertiary, fontWeight: "600" },
+  rateValue: {
+    fontSize: type.xl, fontWeight: "800", color: colors.onSurface,
+    marginTop: 2, fontVariant: ["tabular-nums"],
+  },
+  detailRow: {
+    flexDirection: "row", justifyContent: "space-between",
+    paddingVertical: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.divider,
+  },
+  detailLabel: { color: colors.onSurfaceTertiary },
+  detailValue: { fontWeight: "700", color: colors.onSurface, fontVariant: ["tabular-nums"] },
   card: {
     marginHorizontal: spacing.xl, backgroundColor: colors.surfaceSecondary,
     borderRadius: radius.lg, padding: spacing.lg, marginTop: spacing.md,
@@ -356,8 +553,13 @@ const styles = StyleSheet.create({
     elevation: 1,
   },
   cardTitle: { fontSize: type.lg, fontWeight: "700", color: colors.onSurface, marginBottom: spacing.md },
-  chartWrap: { flexDirection: "row", alignItems: "flex-end", justifyContent: "space-between", height: 160 },
-  barCol: { flex: 1, alignItems: "center", justifyContent: "flex-end" },
+  chartHead: {
+    flexDirection: "row", justifyContent: "space-between",
+    alignItems: "baseline", marginBottom: spacing.md,
+  },
+  chartPeak: { fontSize: type.sm, color: colors.onSurfaceTertiary, fontVariant: ["tabular-nums"] },
+  chartWrap: { flexDirection: "row", alignItems: "flex-end", height: 160 },
+  barCol: { alignItems: "center", justifyContent: "flex-end", flexShrink: 0 },
   barStack: { flexDirection: "row", alignItems: "flex-end", gap: 2, height: 130 },
   bar: { width: 6, borderRadius: 3 },
   barLabel: { fontSize: 10, color: colors.onSurfaceTertiary, marginTop: 4 },
