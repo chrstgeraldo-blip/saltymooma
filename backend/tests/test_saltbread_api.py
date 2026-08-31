@@ -182,7 +182,69 @@ class TestDashboard:
         assert r.status_code == 200
         d = r.json()
         for k in ["total_revenue", "total_expenses", "profit", "active_po", "trend",
-                  "top_variants", "expenses_by_category"]:
+                  "granularity", "top_variants", "expenses_by_category"]:
             assert k in d
-        assert len(d["trend"]) == 7
+        # No range = span the data that exists, bucketed to stay readable.
+        assert len(d["trend"]) >= 1
+        assert d["granularity"] in ("day", "week", "month")
+        for point in d["trend"]:
+            assert {"date", "label", "revenue", "expenses"} <= set(point)
         assert d["profit"] == d["total_revenue"] - d["total_expenses"]
+
+    def test_all_time_has_no_comparison(self, h):
+        """There is no period before "all time" to compare against."""
+        r = requests.get(f"{API}/dashboard/summary", headers=h, timeout=15)
+        assert r.status_code == 200
+        assert r.json()["comparison"] is None
+
+    def test_ranged_comparison_is_previous_equal_window(self, h):
+        r = requests.get(
+            f"{API}/dashboard/summary",
+            params={"from_date": "2026-08-25", "to_date": "2026-08-31"},
+            headers=h, timeout=15,
+        )
+        assert r.status_code == 200
+        c = r.json()["comparison"]
+        # 7-day window -> the 7 days immediately before it
+        assert c["from"] == "2026-08-18"
+        assert c["to"] == "2026-08-24"
+        assert c["profit"] == c["total_revenue"] - c["total_expenses"]
+
+    def test_derived_rates(self, h):
+        r = requests.get(f"{API}/dashboard/summary", headers=h, timeout=15)
+        d = r.json()
+        if d["total_revenue"]:
+            assert d["profit_margin"] == pytest.approx(
+                d["profit"] / d["total_revenue"] * 100, abs=0.05)
+            assert d["avg_order_value"] == pytest.approx(
+                d["total_revenue"] / d["completed_orders"], abs=0.01)
+        else:
+            # undefined rather than a misleading zero
+            assert d["profit_margin"] is None
+            assert d["avg_order_value"] is None
+
+    def test_trend_points_carry_bucket_detail(self, h):
+        """Each bar must be able to explain itself when tapped."""
+        r = requests.get(f"{API}/dashboard/summary", headers=h, timeout=15)
+        d = r.json()
+        total = sum(p["order_count"] for p in d["trend"])
+        assert total == d["completed_orders"]
+        for p in d["trend"]:
+            assert p["end_date"] >= p["date"]
+
+    @pytest.mark.parametrize("from_date,to_date,granularity,max_buckets", [
+        ("2026-08-01", "2026-08-31", "day",   31),   # a month stays daily
+        ("2026-06-01", "2026-08-31", "week",  15),   # a quarter rolls up to weeks
+        ("2025-09-01", "2026-08-31", "month", 13),   # a year rolls up to months
+    ])
+    def test_trend_granularity_scales_with_range(self, h, from_date, to_date, granularity, max_buckets):
+        """Long ranges must not return one bar per day - the chart becomes unreadable."""
+        r = requests.get(
+            f"{API}/dashboard/summary",
+            params={"from_date": from_date, "to_date": to_date},
+            headers=h, timeout=15,
+        )
+        assert r.status_code == 200
+        d = r.json()
+        assert d["granularity"] == granularity
+        assert 0 < len(d["trend"]) <= max_buckets
