@@ -5,7 +5,7 @@ import { colors } from "@/src/lib/theme";
 import { View, ActivityIndicator, Platform } from "react-native";
 
 export default function TabsLayout() {
-  const { user, loading } = useAuth();
+  const { user, loading, isOwner, isStaff } = useAuth();
   if (loading) {
     return (
       <View style={{ flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: colors.surface }}>
@@ -14,6 +14,8 @@ export default function TabsLayout() {
     );
   }
   if (!user) return <Redirect href="/login" />;
+  // Cashiers live entirely in (pos); admins belong here but see no money.
+  if (!isStaff) return <Redirect href="/(pos)/sell" />;
 
   return (
     <Tabs
@@ -33,6 +35,7 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="dashboard"
         options={{
+          href: isOwner ? undefined : null,
           title: "Dashboard",
           tabBarIcon: ({ color, size }) => <Ionicons name="stats-chart" size={size} color={color} />,
         }}
@@ -54,6 +57,7 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="expenses"
         options={{
+          href: isOwner ? undefined : null,
           title: "Expenses",
           tabBarIcon: ({ color, size }) => <Ionicons name="wallet" size={size} color={color} />,
         }}

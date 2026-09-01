@@ -4,6 +4,7 @@ import { useLocalSearchParams, useFocusEffect, router, Stack } from "expo-router
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api } from "@/src/lib/api";
+import { useAuth } from "@/src/lib/auth";
 import { colors, spacing, radius, type, formatIDR, STATUS_META } from "@/src/lib/theme";
 
 type Order = {
@@ -18,6 +19,7 @@ const STATUS_ORDER: (keyof typeof STATUS_META)[] = ["pending", "in_progress", "c
 export default function OrderDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const insets = useSafeAreaInsets();
+  const { isOwner } = useAuth();
   const [order, setOrder] = useState<Order | null>(null);
   const [loading, setLoading] = useState(true);
   const [updating, setUpdating] = useState(false);
@@ -62,9 +64,13 @@ export default function OrderDetail() {
           <Ionicons name="chevron-back" size={26} color={colors.onSurface} />
         </Pressable>
         <Text style={styles.headerTitle}>Order</Text>
-        <Pressable testID="delete-order-btn" onPress={remove} hitSlop={8}>
-          <Ionicons name="trash-outline" size={22} color={colors.error} />
-        </Pressable>
+        {isOwner ? (
+          <Pressable testID="delete-order-btn" onPress={remove} hitSlop={8}>
+            <Ionicons name="trash-outline" size={22} color={colors.error} />
+          </Pressable>
+        ) : (
+          <View style={{ width: 22 }} />
+        )}
       </View>
 
       <ScrollView contentContainerStyle={{ padding: spacing.xl, paddingBottom: 200 }}>

@@ -9,6 +9,7 @@ import { api } from "@/src/lib/api";
 import { colors, spacing, radius, type, formatIDR } from "@/src/lib/theme";
 import { SkeletonCardList } from "@/src/components/Skeleton";
 import { useFetch } from "@/src/hooks/use-fetch";
+import { ErrorNotice } from "@/src/components/ErrorNotice";
 
 type Expense = { id: string; amount: number; category: string; description?: string; date: string };
 
@@ -16,7 +17,7 @@ export default function Expenses() {
   const insets = useSafeAreaInsets();
   const [filter, setFilter] = useState("all");
 
-  const { data, loading, refreshing, refresh, reload } = useFetch(filter, async () => {
+  const { data, loading, refreshing, error, refresh, reload } = useFetch(filter, async () => {
     const [ex, cs] = await Promise.all([
       api<Expense[]>(`/expenses${filter === "all" ? "" : `?category=${encodeURIComponent(filter)}`}`),
       api<string[]>("/expenses/categories"),
@@ -65,11 +66,15 @@ export default function Expenses() {
           contentContainerStyle={{ padding: spacing.xl, paddingTop: spacing.sm, paddingBottom: 120 }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} />}
           ListEmptyComponent={
-            <View style={styles.empty}>
-              <Ionicons name="wallet-outline" size={48} color={colors.onSurfaceTertiary} />
-              <Text style={styles.emptyText}>No expenses yet</Text>
-              <Text style={styles.emptySub}>Tap + to log your first expense</Text>
-            </View>
+            error ? (
+              <ErrorNotice message={error} onRetry={refresh} />
+            ) : (
+              <View style={styles.empty}>
+                <Ionicons name="wallet-outline" size={48} color={colors.onSurfaceTertiary} />
+                <Text style={styles.emptyText}>No expenses yet</Text>
+                <Text style={styles.emptySub}>Tap + to log your first expense</Text>
+              </View>
+            )
           }
           renderItem={({ item }) => (
             <View style={styles.card}>

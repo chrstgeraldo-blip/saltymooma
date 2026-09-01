@@ -9,14 +9,19 @@ import { api } from "@/src/lib/api";
 import { colors, spacing, radius, type, formatIDR } from "@/src/lib/theme";
 import { SkeletonCardList } from "@/src/components/Skeleton";
 import { useFetch } from "@/src/hooks/use-fetch";
+import { useAuth } from "@/src/lib/auth";
+import { ErrorNotice } from "@/src/components/ErrorNotice";
 
 type Product = { id: string; name: string; price: number; image_url?: string; active: boolean };
 
 export default function Products() {
   const insets = useSafeAreaInsets();
-  const { data, loading, refreshing, refresh } = useFetch<Product[]>(
+  // Admins need prices to take an order, but editing the catalogue is the
+  // owner's — the API rejects their writes either way.
+  const { isOwner } = useAuth();
+  const { data, loading, refreshing, error, refresh } = useFetch<Product[]>(
     "products",
-    () => api<Product[]>("/products")
+    () => api<Product[]>("/products?include_inactive=true")
   );
   const items = data ?? [];
 
@@ -29,6 +34,8 @@ export default function Products() {
 
       {loading ? (
         <SkeletonCardList count={4} />
+      ) : error && !items.length ? (
+        <ErrorNotice message={error} onRetry={refresh} />
       ) : (
         <FlatList
           testID="products-grid"
@@ -41,6 +48,7 @@ export default function Products() {
           renderItem={({ item }) => (
             <Pressable
               testID={`product-card-${item.id}`}
+              disabled={!isOwner}
               onPress={() => router.push({ pathname: "/product/[id]", params: { id: item.id } })}
               style={styles.card}
             >
@@ -67,13 +75,15 @@ export default function Products() {
         />
       )}
 
-      <Pressable
-        testID="new-product-fab"
-        onPress={() => router.push({ pathname: "/product/[id]", params: { id: "new" } })}
-        style={[styles.fab, { bottom: insets.bottom + 80 }]}
-      >
-        <Ionicons name="add" size={28} color={colors.onBrandPrimary} />
-      </Pressable>
+      {isOwner ? (
+        <Pressable
+          testID="new-product-fab"
+          onPress={() => router.push({ pathname: "/product/[id]", params: { id: "new" } })}
+          style={[styles.fab, { bottom: insets.bottom + 80 }]}
+        >
+          <Ionicons name="add" size={28} color={colors.onBrandPrimary} />
+        </Pressable>
+      ) : null}
     </View>
   );
 }
