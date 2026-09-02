@@ -9,6 +9,8 @@ import { api } from "@/src/lib/api";
 import { colors, spacing, radius, type, formatIDR, STATUS_META } from "@/src/lib/theme";
 import { SkeletonCardList } from "@/src/components/Skeleton";
 import { useFetch } from "@/src/hooks/use-fetch";
+import { useAuth } from "@/src/lib/auth";
+import { ErrorNotice } from "@/src/components/ErrorNotice";
 
 type Order = {
   id: string;
@@ -29,9 +31,10 @@ const FILTERS: { key: string; label: string }[] = [
 
 export default function Orders() {
   const insets = useSafeAreaInsets();
+  const { isOwner } = useAuth();
   const [filter, setFilter] = useState("all");
 
-  const { data, loading, refreshing, refresh } = useFetch<Order[]>(
+  const { data, loading, refreshing, error, refresh } = useFetch<Order[]>(
     filter,
     () => api<Order[]>(`/orders${filter === "all" ? "" : `?status_filter=${filter}`}`)
   );
@@ -40,8 +43,19 @@ export default function Orders() {
   return (
     <View style={{ flex: 1, backgroundColor: colors.surface, paddingTop: insets.top }}>
       <View style={styles.header}>
-        <Text style={styles.title}>Orders</Text>
-        <Text style={styles.subtitle}>{orders.length} {orders.length === 1 ? "order" : "orders"}</Text>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.title}>Orders</Text>
+          <Text style={styles.subtitle}>{orders.length} {orders.length === 1 ? "order" : "orders"}</Text>
+        </View>
+        <Pressable testID="till-btn" onPress={() => router.push("/(pos)/sell")} style={styles.iconBtn}>
+          <Ionicons name="pricetag-outline" size={20} color={colors.onSurface} />
+        </Pressable>
+        {/* Admins never see the dashboard, so this is their only way to Settings. */}
+        {!isOwner ? (
+          <Pressable testID="settings-btn" onPress={() => router.push("/settings")} style={styles.iconBtn}>
+            <Ionicons name="settings-outline" size={20} color={colors.onSurface} />
+          </Pressable>
+        ) : null}
       </View>
 
       <View style={{ height: 56 }}>
@@ -76,11 +90,15 @@ export default function Orders() {
           contentContainerStyle={{ padding: spacing.xl, paddingTop: spacing.sm, paddingBottom: 120 }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} />}
           ListEmptyComponent={
-            <View style={styles.empty}>
-              <Ionicons name="basket-outline" size={48} color={colors.onSurfaceTertiary} />
-              <Text style={styles.emptyText}>No orders yet</Text>
-              <Text style={styles.emptySub}>Tap + to create your first PO</Text>
-            </View>
+            error ? (
+              <ErrorNotice message={error} onRetry={refresh} />
+            ) : (
+              <View style={styles.empty}>
+                <Ionicons name="basket-outline" size={48} color={colors.onSurfaceTertiary} />
+                <Text style={styles.emptyText}>No orders yet</Text>
+                <Text style={styles.emptySub}>Tap + to create your first PO</Text>
+              </View>
+            )
           }
           renderItem={({ item }) => {
             const meta = STATUS_META[item.status];
@@ -123,7 +141,14 @@ export default function Orders() {
 }
 
 const styles = StyleSheet.create({
-  header: { paddingHorizontal: spacing.xl, paddingTop: spacing.md, paddingBottom: spacing.sm },
+  header: {
+    flexDirection: "row", alignItems: "center", gap: spacing.sm,
+    paddingHorizontal: spacing.xl, paddingTop: spacing.md, paddingBottom: spacing.sm,
+  },
+  iconBtn: {
+    width: 40, height: 40, borderRadius: radius.pill, backgroundColor: colors.surfaceSecondary,
+    alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.border,
+  },
   title: { fontSize: type["2xl"], fontWeight: "800", color: colors.onSurface },
   subtitle: { color: colors.onSurfaceTertiary, marginTop: 2 },
   chipRow: { paddingHorizontal: spacing.xl, gap: spacing.sm, alignItems: "center", paddingVertical: spacing.md },

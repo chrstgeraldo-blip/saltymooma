@@ -3,6 +3,7 @@ from fastapi.security import OAuth2PasswordBearer
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import ReturnDocument
 import os
 import logging
 from pathlib import Path
@@ -20,7 +21,13 @@ mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
-SECRET_KEY = os.environ.get('SECRET_KEY', 'saltbread-dev-secret-please-change')
+# No fallback: a missing key would silently sign tokens with a value that is
+# public in this repo's history, making every session forgeable.
+SECRET_KEY = os.environ.get('SECRET_KEY')
+if not SECRET_KEY:
+    raise RuntimeError(
+        "SECRET_KEY is not set. Add it to backend/.env before starting the server."
+    )
 ALGORITHM = 'HS256'
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 30  # 30 days
 
@@ -54,22 +61,49 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
     user = await db.users.find_one({"email": email}, {"_id": 0, "password_hash": 0})
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
+    # Accounts created before roles existed are the original owner.
+    user["role"] = user.get("role") or "owner"
+    return user
+
+
+def require_owner(user=Depends(get_current_user)):
+    """Guards anything financial or administrative. Only the owner sees revenue,
+    costs or margins, manages the catalogue, or manages other accounts."""
+    if user.get("role") != "owner":
+        raise HTTPException(status_code=403, detail="Owner access required")
+    return user
+
+
+def require_staff(user=Depends(get_current_user)):
+    """Guards the preorder book and the bake sheet. Admins run operations —
+    everything the owner does except the money — while cashiers stay on the
+    till and never touch preorders."""
+    if user.get("role") not in ("owner", "admin"):
+        raise HTTPException(status_code=403, detail="Staff access required")
     return user
 
 # ---------- Models ----------
-class RegisterIn(BaseModel):
-    email: EmailStr
-    password: str
-    name: str
+Role = Literal["owner", "admin", "cashier"]
 
 class LoginIn(BaseModel):
     email: EmailStr
     password: str
 
+class StaffCreate(BaseModel):
+    email: EmailStr
+    password: str
+    name: str
+    role: Role = "cashier"
+
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password: str
+
 class UserOut(BaseModel):
     id: str
     email: EmailStr
     name: str
+    role: Role = "owner"
 
 class TokenOut(BaseModel):
     access_token: str
@@ -95,14 +129,16 @@ class ProductUpdate(BaseModel):
     image_url: Optional[str] = None
     active: Optional[bool] = None
 
-class OrderItem(BaseModel):
+class LineItem(BaseModel):
+    """Shared by preorders and counter sales. Values are snapshotted at the time
+    of sale so later price or name changes never rewrite history."""
     product_id: str
     product_name: str
     quantity: int
     unit_price: float
     subtotal: float
 
-class OrderItemIn(BaseModel):
+class LineItemIn(BaseModel):
     product_id: str
     quantity: int
 
@@ -113,7 +149,7 @@ class Order(BaseModel):
     customer_name: str
     customer_phone: Optional[str] = None
     delivery_date: str  # ISO date string
-    items: List[OrderItem]
+    items: List[LineItem]
     total: float
     status: OrderStatus = "pending"
     notes: Optional[str] = None
@@ -124,11 +160,63 @@ class OrderCreate(BaseModel):
     customer_name: str
     customer_phone: Optional[str] = None
     delivery_date: str
-    items: List[OrderItemIn]
+    items: List[LineItemIn]
     notes: Optional[str] = None
 
 class OrderStatusUpdate(BaseModel):
     status: OrderStatus
+
+PaymentMethod = Literal["cash", "qris", "transfer"]
+
+class Sale(BaseModel):
+    """A walk-in counter sale. Deliberately NOT an Order: it has no delivery
+    date and no status lifecycle, it is born complete, and — critically — it
+    consumes bread that is already baked, so it must never reach the
+    production summary the way a preorder does."""
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    receipt_no: str
+    items: List[LineItem]
+    subtotal: float
+    discount: float = 0.0
+    total: float
+    payment_method: PaymentMethod
+    amount_tendered: Optional[float] = None
+    change: Optional[float] = None
+    cashier_id: str
+    cashier_name: str
+    # Sales are an append-only ledger: corrections void, they never delete.
+    voided: bool = False
+    voided_at: Optional[datetime] = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class SaleCreate(BaseModel):
+    items: List[LineItemIn]
+    payment_method: PaymentMethod
+    discount: float = 0.0
+    amount_tendered: Optional[float] = None
+
+StockReason = Literal["stock_in", "waste"]
+
+class StockMovement(BaseModel):
+    """A manual change to counter stock. Sales are NOT recorded here — sold
+    quantity is derived from the sales collection, so voiding a sale returns
+    its stock automatically and there is one source of truth for what sold."""
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    date: str  # ISO date, the trading day this belongs to
+    product_id: str
+    product_name: str
+    quantity: int  # signed: positive added, negative removed
+    reason: StockReason
+    note: Optional[str] = None
+    user_id: str
+    user_name: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class StockMovementCreate(BaseModel):
+    product_id: str
+    quantity: int  # always positive; the reason decides the direction
+    reason: StockReason = "stock_in"
+    note: Optional[str] = None
 
 class Expense(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -157,28 +245,6 @@ DEFAULT_VARIANTS = [
 ]
 
 # ---------- Auth Routes ----------
-@api_router.post("/auth/register", response_model=TokenOut, status_code=201)
-async def register(body: RegisterIn):
-    email = body.email.lower()
-    existing = await db.users.find_one({"email": email})
-    if existing:
-        raise HTTPException(status_code=409, detail="Email already registered")
-    user_id = str(uuid.uuid4())
-    doc = {
-        "id": user_id,
-        "email": email,
-        "name": body.name,
-        "password_hash": hash_password(body.password),
-        "created_at": datetime.now(timezone.utc),
-    }
-    await db.users.insert_one(doc)
-    token = create_token(email)
-    return {
-        "access_token": token,
-        "token_type": "bearer",
-        "user": {"id": user_id, "email": email, "name": body.name},
-    }
-
 @api_router.post("/auth/login", response_model=TokenOut)
 async def login(body: LoginIn):
     email = body.email.lower()
@@ -189,27 +255,90 @@ async def login(body: LoginIn):
     return {
         "access_token": token,
         "token_type": "bearer",
-        "user": {"id": user["id"], "email": user["email"], "name": user["name"]},
+        "user": {
+            "id": user["id"], "email": user["email"], "name": user["name"],
+            "role": user.get("role") or "owner",
+        },
     }
 
 @api_router.get("/auth/me", response_model=UserOut)
 async def me(user=Depends(get_current_user)):
-    return {"id": user["id"], "email": user["email"], "name": user["name"]}
+    return {"id": user["id"], "email": user["email"], "name": user["name"], "role": user["role"]}
+
+@api_router.patch("/auth/password")
+async def change_password(body: PasswordChange, user=Depends(get_current_user)):
+    """Any signed-in user may change their own password. Needed because the
+    bootstrap owner ships with a known seed password."""
+    doc = await db.users.find_one({"email": user["email"]})
+    if not doc or not verify_password(body.current_password, doc["password_hash"]):
+        raise HTTPException(status_code=401, detail="Current password is incorrect")
+    if len(body.new_password) < 6:
+        raise HTTPException(status_code=400, detail="New password must be at least 6 characters")
+    await db.users.update_one(
+        {"id": doc["id"]}, {"$set": {"password_hash": hash_password(body.new_password)}}
+    )
+    return {"ok": True}
+
+# ---------- Staff (owner only) ----------
+@api_router.get("/users", response_model=List[UserOut])
+async def list_users(owner=Depends(require_owner)):
+    users = await db.users.find({}, {"_id": 0, "password_hash": 0}).sort("name", 1).to_list(100)
+    for u in users:
+        u["role"] = u.get("role") or "owner"
+    return users
+
+@api_router.post("/users", response_model=UserOut, status_code=201)
+async def create_user(body: StaffCreate, owner=Depends(require_owner)):
+    """Replaces public registration — accounts exist only because an owner made them."""
+    email = body.email.lower()
+    if await db.users.find_one({"email": email}):
+        raise HTTPException(status_code=409, detail="Email already registered")
+    if len(body.password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "email": email,
+        "name": body.name,
+        "role": body.role,
+        "password_hash": hash_password(body.password),
+        "created_at": datetime.now(timezone.utc),
+    }
+    await db.users.insert_one(doc)
+    return {"id": doc["id"], "email": email, "name": body.name, "role": body.role}
+
+@api_router.delete("/users/{user_id}")
+async def delete_user(user_id: str, owner=Depends(require_owner)):
+    if user_id == owner["id"]:
+        raise HTTPException(status_code=400, detail="You cannot remove your own account")
+    target = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    # Never leave the business with no one who can administer it.
+    if (target.get("role") or "owner") == "owner":
+        owners = await db.users.count_documents({"role": {"$ne": "cashier"}})
+        if owners <= 1:
+            raise HTTPException(status_code=400, detail="Cannot remove the last owner")
+    await db.users.delete_one({"id": user_id})
+    return {"ok": True}
 
 # ---------- Products ----------
 @api_router.get("/products", response_model=List[Product])
-async def list_products(user=Depends(get_current_user)):
-    items = await db.products.find({}, {"_id": 0}).sort("name", 1).to_list(500)
+async def list_products(include_inactive: bool = False, user=Depends(get_current_user)):
+    """Defaults to sellable products only, so order forms and the POS grid can
+    use this endpoint directly. Management passes include_inactive to see
+    everything (otherwise a deactivated variant could never be turned back on)."""
+    q = {} if include_inactive else {"active": {"$ne": False}}
+    items = await db.products.find(q, {"_id": 0}).sort("name", 1).to_list(500)
     return items
 
 @api_router.post("/products", response_model=Product, status_code=201)
-async def create_product(body: ProductCreate, user=Depends(get_current_user)):
+async def create_product(body: ProductCreate, user=Depends(require_owner)):
     p = Product(**body.dict()).dict()
     await db.products.insert_one(p.copy())
     return p
 
 @api_router.patch("/products/{product_id}", response_model=Product)
-async def update_product(product_id: str, body: ProductUpdate, user=Depends(get_current_user)):
+async def update_product(product_id: str, body: ProductUpdate, user=Depends(require_owner)):
     updates = {k: v for k, v in body.dict().items() if v is not None}
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
@@ -220,7 +349,7 @@ async def update_product(product_id: str, body: ProductUpdate, user=Depends(get_
     return doc
 
 @api_router.delete("/products/{product_id}")
-async def delete_product(product_id: str, user=Depends(get_current_user)):
+async def delete_product(product_id: str, user=Depends(require_owner)):
     r = await db.products.delete_one({"id": product_id})
     if r.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Product not found")
@@ -228,7 +357,7 @@ async def delete_product(product_id: str, user=Depends(get_current_user)):
 
 # ---------- Orders ----------
 @api_router.get("/orders", response_model=List[Order])
-async def list_orders(status_filter: Optional[str] = None, user=Depends(get_current_user)):
+async def list_orders(status_filter: Optional[str] = None, user=Depends(require_staff)):
     q = {}
     if status_filter and status_filter != "all":
         q["status"] = status_filter
@@ -236,7 +365,7 @@ async def list_orders(status_filter: Optional[str] = None, user=Depends(get_curr
     return items
 
 @api_router.get("/orders/production-summary")
-async def production_summary(date: str, user=Depends(get_current_user)):
+async def production_summary(date: str, user=Depends(require_staff)):
     """
     Aggregate all non-cancelled orders for a given delivery_date (YYYY-MM-DD).
     Returns total pieces to bake, per-variant quantities, and the full order list.
@@ -274,7 +403,7 @@ async def production_summary(date: str, user=Depends(get_current_user)):
     }
 
 @api_router.post("/orders", response_model=Order, status_code=201)
-async def create_order(body: OrderCreate, user=Depends(get_current_user)):
+async def create_order(body: OrderCreate, user=Depends(require_staff)):
     if not body.items:
         raise HTTPException(status_code=400, detail="Order must have at least one item")
     order_items = []
@@ -283,9 +412,14 @@ async def create_order(body: OrderCreate, user=Depends(get_current_user)):
         prod = await db.products.find_one({"id": it.product_id}, {"_id": 0})
         if not prod:
             raise HTTPException(status_code=400, detail=f"Product {it.product_id} not found")
+        # Enforced here too: hiding it in the form is not the guarantee.
+        if prod.get("active") is False:
+            raise HTTPException(
+                status_code=400, detail=f"{prod['name']} is no longer available"
+            )
         subtotal = prod["price"] * it.quantity
         total += subtotal
-        order_items.append(OrderItem(
+        order_items.append(LineItem(
             product_id=prod["id"], product_name=prod["name"],
             quantity=it.quantity, unit_price=prod["price"], subtotal=subtotal,
         ))
@@ -298,14 +432,14 @@ async def create_order(body: OrderCreate, user=Depends(get_current_user)):
     return order
 
 @api_router.get("/orders/{order_id}", response_model=Order)
-async def get_order(order_id: str, user=Depends(get_current_user)):
+async def get_order(order_id: str, user=Depends(require_staff)):
     doc = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Order not found")
     return doc
 
 @api_router.patch("/orders/{order_id}/status", response_model=Order)
-async def update_order_status(order_id: str, body: OrderStatusUpdate, user=Depends(get_current_user)):
+async def update_order_status(order_id: str, body: OrderStatusUpdate, user=Depends(require_staff)):
     updates = {"status": body.status}
     if body.status == "completed":
         updates["completed_at"] = datetime.now(timezone.utc)
@@ -316,19 +450,198 @@ async def update_order_status(order_id: str, body: OrderStatusUpdate, user=Depen
     return doc
 
 @api_router.delete("/orders/{order_id}")
-async def delete_order(order_id: str, user=Depends(get_current_user)):
+async def delete_order(order_id: str, user=Depends(require_owner)):
     r = await db.orders.delete_one({"id": order_id})
     if r.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Order not found")
     return {"ok": True}
 
+# ---------- Sales (counter / POS) ----------
+@api_router.get("/sales", response_model=List[Sale])
+async def list_sales(
+    date_str: Optional[str] = None,
+    include_voided: bool = False,
+    user=Depends(get_current_user),
+):
+    """Defaults to today — the counter's working view. Cashiers need this to
+    look up a receipt, so it is not owner-gated."""
+    d = _parse_day(date_str)
+    q: dict = {"created_at": _day_bounds(d)}
+    if not include_voided:
+        q["voided"] = {"$ne": True}
+    return await db.sales.find(q, {"_id": 0}).sort("created_at", -1).to_list(1000)
+
+
+@api_router.post("/sales", response_model=Sale, status_code=201)
+async def create_sale(body: SaleCreate, user=Depends(get_current_user)):
+    if not body.items:
+        raise HTTPException(status_code=400, detail="Add at least one item")
+    if body.discount < 0:
+        raise HTTPException(status_code=400, detail="Discount cannot be negative")
+
+    items: List[LineItem] = []
+    subtotal = 0.0
+    for it in body.items:
+        if it.quantity < 1:
+            raise HTTPException(status_code=400, detail="Quantity must be at least 1")
+        prod = await db.products.find_one({"id": it.product_id}, {"_id": 0})
+        if not prod:
+            raise HTTPException(status_code=400, detail=f"Product {it.product_id} not found")
+        if prod.get("active") is False:
+            raise HTTPException(status_code=400, detail=f"{prod['name']} is no longer available")
+        line = prod["price"] * it.quantity
+        subtotal += line
+        items.append(LineItem(
+            product_id=prod["id"], product_name=prod["name"],
+            quantity=it.quantity, unit_price=prod["price"], subtotal=line,
+        ))
+
+    if body.discount > subtotal:
+        raise HTTPException(status_code=400, detail="Discount cannot exceed the subtotal")
+    total = subtotal - body.discount
+
+    # Change is only meaningful for cash, and must cover the total.
+    change = None
+    tendered = body.amount_tendered
+    if body.payment_method == "cash":
+        if tendered is None:
+            raise HTTPException(status_code=400, detail="Enter the amount received")
+        if tendered < total:
+            raise HTTPException(status_code=400, detail="Amount received is less than the total")
+        change = round(tendered - total, 2)
+    else:
+        tendered = None
+
+    sale = Sale(
+        receipt_no=await next_receipt_no(),
+        items=items, subtotal=subtotal, discount=body.discount, total=total,
+        payment_method=body.payment_method, amount_tendered=tendered, change=change,
+        cashier_id=user["id"], cashier_name=user["name"],
+    ).dict()
+    await db.sales.insert_one(sale.copy())
+    return sale
+
+
+@api_router.get("/sales/{sale_id}", response_model=Sale)
+async def get_sale(sale_id: str, user=Depends(get_current_user)):
+    doc = await db.sales.find_one({"id": sale_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Sale not found")
+    return doc
+
+
+@api_router.post("/sales/{sale_id}/void", response_model=Sale)
+async def void_sale(sale_id: str, user=Depends(get_current_user)):
+    """Voids rather than deletes: a sale is a financial record, so a correction
+    must stay visible. Cashiers may only void their own mistakes."""
+    doc = await db.sales.find_one({"id": sale_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Sale not found")
+    if user["role"] not in ("owner", "admin") and doc["cashier_id"] != user["id"]:
+        raise HTTPException(status_code=403, detail="You can only void your own sales")
+    if doc.get("voided"):
+        raise HTTPException(status_code=400, detail="This sale is already voided")
+    await db.sales.update_one(
+        {"id": sale_id},
+        {"$set": {"voided": True, "voided_at": datetime.now(timezone.utc)}},
+    )
+    return await db.sales.find_one({"id": sale_id}, {"_id": 0})
+
+
+# ---------- Counter stock ----------
+@api_router.get("/stock")
+async def stock_levels(date_str: Optional[str] = None, user=Depends(get_current_user)):
+    """Counter stock for one trading day.
+
+    Stock is derived, never stored as a running total: bread is perishable, so
+    each day genuinely starts at zero and a day with no movements simply has
+    none. `sold` comes straight from the sales collection, which means voiding
+    a sale hands its stock back with no compensating entry to get wrong.
+    """
+    d = _parse_day(date_str)
+    day = d.isoformat()
+
+    movements = await db.stock_movements.find({"date": day}, {"_id": 0}).to_list(2000)
+    sales = await db.sales.find(
+        {"created_at": _day_bounds(d), "voided": {"$ne": True}}, {"_id": 0}
+    ).to_list(2000)
+    products = await db.products.find({"active": {"$ne": False}}, {"_id": 0}).sort("name", 1).to_list(500)
+
+    added: dict = {}
+    removed: dict = {}
+    for m in movements:
+        bucket = added if m["quantity"] > 0 else removed
+        bucket[m["product_id"]] = bucket.get(m["product_id"], 0) + abs(m["quantity"])
+
+    sold: dict = {}
+    for sale in sales:
+        for it in sale["items"]:
+            sold[it["product_id"]] = sold.get(it["product_id"], 0) + it["quantity"]
+
+    items = []
+    for p in products:
+        a = added.get(p["id"], 0)
+        w = removed.get(p["id"], 0)
+        s = sold.get(p["id"], 0)
+        items.append({
+            "product_id": p["id"],
+            "product_name": p["name"],
+            "price": p["price"],
+            "image_url": p.get("image_url"),
+            "baked": a,
+            "wasted": w,
+            "sold": s,
+            # May go negative — that is a real signal the count is wrong, not
+            # something to clamp away.
+            "on_hand": a - w - s,
+        })
+
+    return {
+        "date": day,
+        "items": items,
+        "total_baked": sum(i["baked"] for i in items),
+        "total_sold": sum(i["sold"] for i in items),
+        "total_wasted": sum(i["wasted"] for i in items),
+        "total_on_hand": sum(i["on_hand"] for i in items),
+    }
+
+
+@api_router.get("/stock/movements", response_model=List[StockMovement])
+async def stock_movements(date_str: Optional[str] = None, user=Depends(get_current_user)):
+    """The audit trail behind the numbers — every manual change, attributed."""
+    day = _parse_day(date_str).isoformat()
+    return await db.stock_movements.find({"date": day}, {"_id": 0}).sort("created_at", -1).to_list(500)
+
+
+@api_router.post("/stock", response_model=StockMovement, status_code=201)
+async def record_stock(body: StockMovementCreate, user=Depends(get_current_user)):
+    """Counter staff record what the bakers hand over, and what gets thrown
+    away. The reason decides the direction, so a client cannot accidentally
+    add stock while meaning to remove it."""
+    if body.quantity <= 0:
+        raise HTTPException(status_code=400, detail="Quantity must be greater than zero")
+    prod = await db.products.find_one({"id": body.product_id}, {"_id": 0})
+    if not prod:
+        raise HTTPException(status_code=400, detail="Product not found")
+
+    signed = body.quantity if body.reason == "stock_in" else -body.quantity
+    doc = StockMovement(
+        date=datetime.now(timezone.utc).date().isoformat(),
+        product_id=prod["id"], product_name=prod["name"],
+        quantity=signed, reason=body.reason, note=body.note,
+        user_id=user["id"], user_name=user["name"],
+    ).dict()
+    await db.stock_movements.insert_one(doc.copy())
+    return doc
+
+
 # ---------- Expenses ----------
 @api_router.get("/expenses/categories")
-async def expense_categories(user=Depends(get_current_user)):
+async def expense_categories(user=Depends(require_owner)):
     return EXPENSE_CATEGORIES
 
 @api_router.get("/expenses", response_model=List[Expense])
-async def list_expenses(category: Optional[str] = None, user=Depends(get_current_user)):
+async def list_expenses(category: Optional[str] = None, user=Depends(require_owner)):
     q = {}
     if category and category != "all":
         q["category"] = category
@@ -336,7 +649,7 @@ async def list_expenses(category: Optional[str] = None, user=Depends(get_current
     return items
 
 @api_router.post("/expenses", response_model=Expense, status_code=201)
-async def create_expense(body: ExpenseCreate, user=Depends(get_current_user)):
+async def create_expense(body: ExpenseCreate, user=Depends(require_owner)):
     if body.category not in EXPENSE_CATEGORIES:
         raise HTTPException(status_code=400, detail="Invalid category")
     date_str = body.date or datetime.now(timezone.utc).date().isoformat()
@@ -348,13 +661,47 @@ async def create_expense(body: ExpenseCreate, user=Depends(get_current_user)):
     return exp
 
 @api_router.delete("/expenses/{expense_id}")
-async def delete_expense(expense_id: str, user=Depends(get_current_user)):
+async def delete_expense(expense_id: str, user=Depends(require_owner)):
     r = await db.expenses.delete_one({"id": expense_id})
     if r.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Expense not found")
     return {"ok": True}
 
 # ---------- Dashboard ----------
+def _day_bounds(d: date) -> dict:
+    """UTC day window. Consistent with the rest of the app's date bucketing —
+    see the timezone note in the README before changing it."""
+    return {
+        "$gte": datetime.combine(d, datetime.min.time(), tzinfo=timezone.utc),
+        "$lt": datetime.combine(d + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc),
+    }
+
+
+def _parse_day(value: Optional[str]) -> date:
+    day = value or datetime.now(timezone.utc).date().isoformat()
+    try:
+        return datetime.fromisoformat(day).date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format, use YYYY-MM-DD")
+
+
+async def next_receipt_no() -> str:
+    """Human-readable, sequential, per-day: 260901-0042.
+
+    A UUID is unusable when a customer phones about a receipt. Allocated with an
+    atomic $inc rather than counting documents, because counting races the
+    moment a second device is at the counter.
+    """
+    key = datetime.now(timezone.utc).strftime("%y%m%d")
+    doc = await db.counters.find_one_and_update(
+        {"_id": f"receipt:{key}"},
+        {"$inc": {"seq": 1}},
+        upsert=True,
+        return_document=ReturnDocument.AFTER,
+    )
+    return f"{key}-{doc['seq']:04d}"
+
+
 def _in_window(date_str: Optional[str], d_from: Optional[date], d_to: Optional[date]) -> bool:
     if not date_str:
         return False
@@ -369,18 +716,31 @@ def _in_window(date_str: Optional[str], d_from: Optional[date], d_to: Optional[d
     return True
 
 
-def _window_totals(completed_orders: list, expenses: list,
+def _window_totals(completed_orders: list, sales: list, expenses: list,
                    d_from: Optional[date], d_to: Optional[date]) -> dict:
-    """Revenue/expense/profit for one date window. Shared by the current and
-    previous periods so the comparison can't drift from the headline numbers."""
+    """Revenue/expense/profit for one date window, across both revenue channels.
+    Shared by the current and previous periods so the comparison can't drift
+    from the headline numbers.
+
+    Preorder revenue is recognised on completion (`completed_at`); a counter
+    sale is instantaneous, so it is recognised at `created_at`.
+    """
     orders = [o for o in completed_orders
               if _in_window(_completed_date_str(o.get("completed_at")), d_from, d_to)]
+    counter = [s for s in sales
+               if _in_window(_completed_date_str(s.get("created_at")), d_from, d_to)]
     exps = [e for e in expenses if _in_window(e.get("date"), d_from, d_to)]
-    revenue = sum(o["total"] for o in orders)
+
+    preorder_revenue = sum(o["total"] for o in orders)
+    counter_revenue = sum(s["total"] for s in counter)
+    revenue = preorder_revenue + counter_revenue
     spend = sum(e["amount"] for e in exps)
     return {
         "orders": orders,
+        "sales": counter,
         "expenses": exps,
+        "preorder_revenue": preorder_revenue,
+        "counter_revenue": counter_revenue,
         "total_revenue": revenue,
         "total_expenses": spend,
         "profit": revenue - spend,
@@ -446,7 +806,7 @@ def _completed_date_str(ca) -> Optional[str]:
 async def dashboard_summary(
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
-    user=Depends(get_current_user),
+    user=Depends(require_owner),
 ):
     # Parse range (inclusive)
     today = datetime.now(timezone.utc).date()
@@ -460,15 +820,17 @@ async def dashboard_summary(
 
     completed_orders_all = await db.orders.find({"status": "completed"}, {"_id": 0}).to_list(5000)
     all_orders = await db.orders.find({}, {"_id": 0}).to_list(5000)
+    sales_all = await db.sales.find({"voided": {"$ne": True}}, {"_id": 0}).to_list(5000)
     expenses_all = await db.expenses.find({}, {"_id": 0}).to_list(5000)
 
     ranged = bool(d_from or d_to)
     if ranged:
-        current = _window_totals(completed_orders_all, expenses_all, d_from, d_to)
+        current = _window_totals(completed_orders_all, sales_all, expenses_all, d_from, d_to)
     else:
-        current = _window_totals(completed_orders_all, expenses_all, None, None)
+        current = _window_totals(completed_orders_all, sales_all, expenses_all, None, None)
 
     completed_orders = current["orders"]
+    sales = current["sales"]
     expenses = current["expenses"]
     total_revenue = current["total_revenue"]
     total_expenses = current["total_expenses"]
@@ -482,7 +844,8 @@ async def dashboard_summary(
     # Derived rates. None rather than 0 when undefined, so the client can show
     # a dash instead of implying a real 0%.
     profit_margin = round(profit / total_revenue * 100, 1) if total_revenue else None
-    avg_order_value = round(total_revenue / completed_count, 2) if completed_count else None
+    transactions = completed_count + len(sales)
+    avg_order_value = round(total_revenue / transactions, 2) if transactions else None
 
     # Previous equal-length window, for period-over-period comparison. Only
     # meaningful for a closed range — "All Time" has nothing before it.
@@ -491,7 +854,7 @@ async def dashboard_summary(
         span = (d_to - d_from).days + 1
         prev_to = d_from - timedelta(days=1)
         prev_from = prev_to - timedelta(days=span - 1)
-        prev = _window_totals(completed_orders_all, expenses_all, prev_from, prev_to)
+        prev = _window_totals(completed_orders_all, sales_all, expenses_all, prev_from, prev_to)
         comparison = {
             "from": prev_from.isoformat(),
             "to": prev_to.isoformat(),
@@ -506,11 +869,17 @@ async def dashboard_summary(
     # Roll daily totals up once, then bucket. Avoids re-scanning every order per day.
     rev_by_day: dict = {}
     orders_by_day: dict = {}
+    sales_by_day: dict = {}
     for o in completed_orders:
         ds = _completed_date_str(o.get("completed_at"))
         if ds:
             rev_by_day[ds] = rev_by_day.get(ds, 0.0) + o["total"]
             orders_by_day[ds] = orders_by_day.get(ds, 0) + 1
+    for sale in sales:
+        ds = _completed_date_str(sale.get("created_at"))
+        if ds:
+            rev_by_day[ds] = rev_by_day.get(ds, 0.0) + sale["total"]
+            sales_by_day[ds] = sales_by_day.get(ds, 0) + 1
     exp_by_day: dict = {}
     for e in expenses:
         ds = e.get("date")
@@ -539,7 +908,7 @@ async def dashboard_summary(
     ordered: List[date] = []
     cur = _bucket_start(start, granularity)
     while cur <= end:
-        buckets[cur] = {"revenue": 0.0, "expenses": 0.0, "order_count": 0}
+        buckets[cur] = {"revenue": 0.0, "expenses": 0.0, "order_count": 0, "sale_count": 0}
         ordered.append(cur)
         cur = _next_bucket(cur, granularity)
 
@@ -547,6 +916,7 @@ async def dashboard_summary(
         (rev_by_day, "revenue"),
         (exp_by_day, "expenses"),
         (orders_by_day, "order_count"),
+        (sales_by_day, "sale_count"),
     ):
         for ds, amount in source.items():
             try:
@@ -567,14 +937,15 @@ async def dashboard_summary(
             "revenue": buckets[b]["revenue"],
             "expenses": buckets[b]["expenses"],
             "order_count": buckets[b]["order_count"],
+            "sale_count": buckets[b]["sale_count"],
         }
         for b in ordered
     ]
 
     # Top variants
     variant_counts = {}
-    for o in completed_orders:
-        for it in o["items"]:
+    for txn in [*completed_orders, *sales]:
+        for it in txn["items"]:
             variant_counts.setdefault(it["product_name"], {"quantity": 0, "revenue": 0.0})
             variant_counts[it["product_name"]]["quantity"] += it["quantity"]
             variant_counts[it["product_name"]]["revenue"] += it["subtotal"]
@@ -596,6 +967,10 @@ async def dashboard_summary(
         "completed_orders": completed_count,
         "profit_margin": profit_margin,
         "avg_order_value": avg_order_value,
+        "revenue_by_channel": [
+            {"channel": "preorder", "amount": current["preorder_revenue"], "count": completed_count},
+            {"channel": "counter", "amount": current["counter_revenue"], "count": len(sales)},
+        ],
         "comparison": comparison,
         "trend": trend,
         "granularity": granularity,
@@ -625,11 +1000,15 @@ async def startup():
             "id": str(uuid.uuid4()),
             "email": "baker@saltbread.com",
             "name": "Baker Owner",
+            "role": "owner",
             "password_hash": hash_password("baker123"),
             "created_at": datetime.now(timezone.utc),
         }
         await db.users.insert_one(demo)
-        logger.info("Seeded demo user baker@saltbread.com / baker123")
+        logger.warning(
+            "Bootstrapped owner baker@saltbread.com with the default seed password. "
+            "Change it from Settings before real use."
+        )
 
 @app.on_event("shutdown")
 async def shutdown_db_client():

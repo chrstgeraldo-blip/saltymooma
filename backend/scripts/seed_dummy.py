@@ -52,6 +52,36 @@ EXPENSES = [
 ]
 
 
+DEMO_USERS = [
+    ("baker@saltbread.com",   "Baker Owner",   "owner",   "baker123"),
+    ("admin@saltbread.com",   "Admin PO",      "admin",   "admin123"),
+    ("kasir@saltbread.com",   "Kasir Counter", "cashier", "kasir123"),
+]
+
+
+def ensure_users():
+    """Idempotently guarantee one account per role so both sides of the
+    permission boundary can be exercised. Existing passwords are left alone."""
+    import bcrypt
+    for email, name, role, password in DEMO_USERS:
+        existing = db.users.find_one({"email": email})
+        if existing:
+            # Backfill role on accounts created before roles existed.
+            if existing.get("role") != role:
+                db.users.update_one({"email": email}, {"$set": {"role": role}})
+                print(f"Set role={role} on existing {email}")
+            continue
+        db.users.insert_one({
+            "id": str(uuid.uuid4()),
+            "email": email,
+            "name": name,
+            "role": role,
+            "password_hash": bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode(),
+            "created_at": datetime.now(timezone.utc),
+        })
+        print(f"Created {role}: {email} / {password}")
+
+
 def clean():
     o = db.orders.delete_many({"notes": {"$regex": r"\[DUMMY\]"}}).deleted_count
     e = db.expenses.delete_many({"description": {"$regex": r"\[DUMMY\]"}}).deleted_count
@@ -160,4 +190,5 @@ def seed():
 if __name__ == "__main__":
     clean()  # always clear prior dummy data first -> re-runnable, no duplicates
     if "--clean" not in sys.argv:
+        ensure_users()
         seed()

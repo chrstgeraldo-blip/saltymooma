@@ -8,6 +8,8 @@ import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api } from "@/src/lib/api";
 import { colors, spacing, radius, type, formatIDR } from "@/src/lib/theme";
+import { CalendarField } from "@/src/components/CalendarField";
+import { toISODate } from "@/src/lib/date";
 
 type Product = { id: string; name: string; price: number };
 
@@ -16,7 +18,7 @@ export default function NewOrder() {
   const [products, setProducts] = useState<Product[]>([]);
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
-  const [deliveryDate, setDeliveryDate] = useState(new Date().toISOString().slice(0, 10));
+  const [deliveryDate, setDeliveryDate] = useState(toISODate(new Date()));
   const [notes, setNotes] = useState("");
   const [qty, setQty] = useState<Record<string, number>>({});
   const [saving, setSaving] = useState(false);
@@ -87,13 +89,14 @@ export default function NewOrder() {
             keyboardType="phone-pad" placeholder="08xx..." placeholderTextColor={colors.onSurfaceTertiary}
           />
         </Field>
-        <Field label="Delivery date (YYYY-MM-DD)">
-          <TextInput
-            testID="order-delivery-date" style={styles.input}
-            value={deliveryDate} onChangeText={setDeliveryDate}
-            placeholder="2026-05-30" placeholderTextColor={colors.onSurfaceTertiary}
+        <View style={{ marginBottom: spacing.lg }}>
+          <CalendarField
+            label="Delivery date"
+            value={deliveryDate}
+            onChange={setDeliveryDate}
+            testID="order-delivery-date"
           />
-        </Field>
+        </View>
 
         <Text style={[styles.section, { marginTop: spacing.xl }]}>Items</Text>
         {products.map((p) => (

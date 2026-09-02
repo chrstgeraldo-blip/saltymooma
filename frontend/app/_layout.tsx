@@ -33,6 +33,8 @@ export default function RootLayout() {
             <Stack.Screen name="index" />
             <Stack.Screen name="login" />
             <Stack.Screen name="(tabs)" />
+            <Stack.Screen name="(pos)" />
+            <Stack.Screen name="settings" />
             <Stack.Screen name="order/new" options={{ presentation: "modal" }} />
             <Stack.Screen name="order/[id]" />
             <Stack.Screen name="expense/new" options={{ presentation: "modal" }} />

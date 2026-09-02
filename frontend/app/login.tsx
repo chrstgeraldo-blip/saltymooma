@@ -10,20 +10,32 @@ import { useAuth } from "@/src/lib/auth";
 import { colors, spacing, radius, type } from "@/src/lib/theme";
 
 export default function Login() {
-  const { signIn, signUp } = useAuth();
-  const [mode, setMode] = useState<"login" | "signup">("login");
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("baker@saltbread.com");
-  const [password, setPassword] = useState("baker123");
+  const { signIn } = useAuth();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const submit = async () => {
-    setBusy(true); setError(null);
+    const trimmed = email.trim();
+    setError(null);
+
+    // Caught here so a typo'd address fails instantly, rather than coming back
+    // as a server validation error a moment later.
+    if (!trimmed || !password) {
+      setError("Enter your email and password.");
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
+      setError("That doesn't look like a valid email address.");
+      return;
+    }
+
+    setBusy(true);
     try {
-      if (mode === "login") await signIn(email.trim(), password);
-      else await signUp(name.trim(), email.trim(), password);
-      router.replace("/(tabs)/dashboard");
+      await signIn(trimmed, password);
+      // index.tsx routes by role from here
+      router.replace("/");
     } catch (e: any) {
       setError(e?.message || "Something went wrong");
     } finally {
@@ -57,24 +69,8 @@ export default function Login() {
         contentContainerStyle={{ padding: spacing.xl, paddingBottom: spacing["3xl"] }}
         keyboardShouldPersistTaps="handled"
       >
-        <Text style={styles.formTitle}>{mode === "login" ? "Welcome back" : "Create account"}</Text>
-        <Text style={styles.formSubtitle}>
-          {mode === "login" ? "Sign in to manage orders and revenue" : "Get started with your bakery workspace"}
-        </Text>
-
-        {mode === "signup" && (
-          <View style={styles.inputBlock}>
-            <Text style={styles.label}>Name</Text>
-            <TextInput
-              testID="signup-name-input"
-              style={styles.input}
-              value={name}
-              onChangeText={setName}
-              placeholder="Baker name"
-              placeholderTextColor={colors.onSurfaceTertiary}
-            />
-          </View>
-        )}
+        <Text style={styles.formTitle}>Welcome back</Text>
+        <Text style={styles.formSubtitle}>Sign in to continue</Text>
 
         <View style={styles.inputBlock}>
           <Text style={styles.label}>Email</Text>
@@ -116,25 +112,13 @@ export default function Login() {
           {busy ? (
             <ActivityIndicator color={colors.onBrandPrimary} />
           ) : (
-            <Text style={styles.submitText}>{mode === "login" ? "Sign in" : "Create account"}</Text>
+            <Text style={styles.submitText}>Sign in</Text>
           )}
         </Pressable>
 
-        <Pressable
-          testID="toggle-auth-mode"
-          onPress={() => { setMode(mode === "login" ? "signup" : "login"); setError(null); }}
-          style={{ marginTop: spacing.lg, alignItems: "center" }}
-        >
-          <Text style={styles.toggle}>
-            {mode === "login" ? "New here? Create account" : "Already have an account? Sign in"}
-          </Text>
-        </Pressable>
-
-        {mode === "login" && (
-          <Text style={styles.hint}>
-            Demo: baker@saltbread.com / baker123
-          </Text>
-        )}
+        <Text style={styles.hint}>
+          Accounts are created by the owner. Contact them if you need access.
+        </Text>
       </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -160,7 +144,6 @@ const styles = StyleSheet.create({
     alignItems: "center", marginTop: spacing.md,
   },
   submitText: { color: colors.onBrandPrimary, fontSize: type.lg, fontWeight: "700" },
-  toggle: { color: colors.brand, fontWeight: "600" },
   error: { color: colors.error, marginBottom: spacing.md },
   hint: { textAlign: "center", color: colors.onSurfaceTertiary, marginTop: spacing.xl, fontSize: type.sm },
 });

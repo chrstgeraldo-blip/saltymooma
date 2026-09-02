@@ -9,6 +9,7 @@ import { api } from "@/src/lib/api";
 import { colors, spacing, radius, type, formatIDR, STATUS_META } from "@/src/lib/theme";
 import { SkeletonCardList } from "@/src/components/Skeleton";
 import { useFetch } from "@/src/hooks/use-fetch";
+import { ErrorNotice } from "@/src/components/ErrorNotice";
 import { toISODate, addDays } from "@/src/lib/date";
 
 // --- Types ---
@@ -243,17 +244,15 @@ export default function Production() {
             ) : null
           }
           ListEmptyComponent={
-            <View style={s.empty}>
-              <Ionicons
-                name={error ? "cloud-offline-outline" : "cafe-outline"}
-                size={52}
-                color={colors.onSurfaceTertiary}
-              />
-              <Text style={s.emptyTitle}>{error ? "Couldn't load" : "Nothing to bake"}</Text>
-              <Text style={s.emptySub}>
-                {error ? "Pull down to try again" : `No active orders for ${friendlyDate(date)}`}
-              </Text>
-            </View>
+            error ? (
+              <ErrorNotice message={error} onRetry={refresh} />
+            ) : (
+              <View style={s.empty}>
+                <Ionicons name="cafe-outline" size={52} color={colors.onSurfaceTertiary} />
+                <Text style={s.emptyTitle}>Nothing to bake</Text>
+                <Text style={s.emptySub}>No active orders for {friendlyDate(date)}</Text>
+              </View>
+            )
           }
           renderItem={({ item: order }) => {
             const meta = STATUS_META[order.status];

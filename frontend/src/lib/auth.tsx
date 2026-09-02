@@ -2,14 +2,17 @@ import React, { createContext, useContext, useEffect, useState } from "react";
 import { api } from "./api";
 import { getToken, setToken, getUser, setUser } from "./storage";
 
-export type User = { id: string; email: string; name: string };
+export type Role = "owner" | "admin" | "cashier";
+export type User = { id: string; email: string; name: string; role: Role };
 
 type Ctx = {
   user: User | null;
   loading: boolean;
   signIn: (email: string, password: string) => Promise<void>;
-  signUp: (name: string, email: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
+  isOwner: boolean;
+  /** owner or admin — runs operations, but only the owner sees money. */
+  isStaff: boolean;
 };
 
 const AuthContext = createContext<Ctx | null>(null);
@@ -47,15 +50,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await applyLogin(data);
   };
 
-  const signUp = async (name: string, email: string, password: string) => {
-    const data = await api<{ access_token: string; user: User }>("/auth/register", {
-      method: "POST",
-      body: JSON.stringify({ name, email, password }),
-      auth: false,
-    });
-    await applyLogin(data);
-  };
-
   const signOut = async () => {
     await setToken(null);
     await setUser(null);
@@ -63,7 +57,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, signIn, signUp, signOut }}>
+    <AuthContext.Provider value={{ user, loading, signIn, signOut, isOwner: user?.role === "owner",
+        isStaff: user?.role === "owner" || user?.role === "admin" }}>
       {children}
     </AuthContext.Provider>
   );

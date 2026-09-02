@@ -11,6 +11,7 @@ import { useAuth } from "@/src/lib/auth";
 import { colors, spacing, radius, type, formatIDR } from "@/src/lib/theme";
 import { Skeleton } from "@/src/components/Skeleton";
 import { useFetch } from "@/src/hooks/use-fetch";
+import { ErrorNotice } from "@/src/components/ErrorNotice";
 import { CalendarGrid } from "@/src/components/CalendarField";
 import { toISODate, formatHuman, startOfMonth, startOfWeek } from "@/src/lib/date";
 
@@ -101,7 +102,7 @@ function DashboardSkeleton() {
 export default function Dashboard() {
   const insets = useSafeAreaInsets();
   const { width: winW } = useWindowDimensions();
-  const { user, signOut } = useAuth();
+  const { user } = useAuth();
   const [range, setRange] = useState<RangeKey>("all");
   const [customFrom, setCustomFrom] = useState<string>(toISODate(startOfMonth(new Date())));
   const [customTo, setCustomTo] = useState<string>(toISODate(new Date()));
@@ -120,7 +121,7 @@ export default function Dashboard() {
 
   // Keying on the query string means changing range shows a skeleton, while
   // returning to the tab on the same range refreshes without one.
-  const { data, loading, refreshing, refresh } = useFetch<Summary>(
+  const { data, loading, refreshing, error, refresh } = useFetch<Summary>(
     query,
     () => api<Summary>(`/dashboard/summary${query ? `?${query}` : ""}`)
   );
@@ -164,8 +165,12 @@ export default function Dashboard() {
           <Text style={styles.hello}>Hi, {user?.name?.split(" ")[0] || "Baker"}</Text>
           <Text style={styles.subhead}>Here&apos;s your bakery snapshot</Text>
         </View>
-        <Pressable testID="signout-btn" onPress={signOut} style={styles.iconBtn}>
-          <Ionicons name="log-out-outline" size={22} color={colors.onSurface} />
+        <Pressable
+          testID="settings-btn"
+          onPress={() => router.push("/settings")}
+          style={styles.iconBtn}
+        >
+          <Ionicons name="settings-outline" size={22} color={colors.onSurface} />
         </Pressable>
       </View>
 
@@ -199,7 +204,9 @@ export default function Dashboard() {
         </Text>
       ) : null}
 
-      {loading ? <DashboardSkeleton /> : (
+      {loading ? <DashboardSkeleton /> : error && !data ? (
+        <ErrorNotice message={error} onRetry={refresh} />
+      ) : (
         <>
       {/* KPI Cards */}
       <View style={styles.kpiGrid}>
@@ -332,6 +339,10 @@ export default function Dashboard() {
 
       {/* Quick actions */}
       <View style={styles.quickRow}>
+        <Pressable testID="quick-sell" style={styles.quickBtn} onPress={() => router.push("/(pos)/sell")}>
+          <Ionicons name="pricetag" size={20} color={colors.brandPrimary} />
+          <Text style={styles.quickText}>New Sale</Text>
+        </Pressable>
         <Pressable testID="quick-new-order" style={styles.quickBtn} onPress={() => router.push("/order/new")}>
           <Ionicons name="add-circle" size={20} color={colors.brandPrimary} />
           <Text style={styles.quickText}>New Order</Text>
@@ -581,7 +592,8 @@ const styles = StyleSheet.create({
   rowRight: { color: colors.onSurface, fontWeight: "700", fontVariant: ["tabular-nums"] },
   progressTrack: { height: 6, backgroundColor: colors.surfaceTertiary, borderRadius: 3, overflow: "hidden" },
   progressFill: { height: "100%", backgroundColor: colors.brandSecondary },
-  quickRow: { flexDirection: "row", paddingHorizontal: spacing.xl, gap: spacing.md, marginTop: spacing.lg },
+  quickRow: {
+    flexWrap: "wrap", flexDirection: "row", paddingHorizontal: spacing.xl, gap: spacing.md, marginTop: spacing.lg },
   quickBtn: {
     flex: 1, flexDirection: "row", gap: spacing.sm, alignItems: "center", justifyContent: "center",
     padding: spacing.lg, backgroundColor: colors.brandTertiary, borderRadius: radius.md,
